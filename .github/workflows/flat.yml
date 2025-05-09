@@ -1,54 +1,51 @@
+# .github/workflows/flat.yml
 name: Generate TikTok RSS Feeds
+
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
   schedule:
     - cron: '10 */4 * * *'
+
 jobs:
   rss_generator:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v3
-        
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
-          
+
       - name: Set up display for Playwright
         run: |
           export DISPLAY=:99
-          sudo Xvfb -ac :99 -screen 0 1280x1024x24 > /dev/null 2>&1 &
-          
+          sudo Xvfb -ac :99 -screen 0 1280x1024x24 >/dev/null 2>&1 &
+
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
       - name: Install dependencies
         run: |
-          uv venv
-          uv pip compile requirements.txt --output-file requirements.lock
-          uv venv run uv pip install -r requirements.lock
-          uv venv run python -m playwright install chromium
-          
+          uv venv                     # crea .venv
+          uv pip install -r requirements.txt
+          uv run python -m playwright install chromium
+
       - name: Generate RSS feeds
         env:
           MS_TOKEN: ${{ secrets.MS_TOKEN }}
         run: |
-          uv venv run python tiktok_rss.py
-          
-      - name: Clean up old thumbnails
+          uv run python tiktok_rss.py
+
+      - name: Commit and push
         run: |
-          uv venv run python cleanup.py --days 60
-          
-      - name: Commit and push changes
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add rss/ thumbnails/ requirements.lock
-          git commit --allow-empty -m "Updated TikTok RSS feeds"
+          git config --global user.name  "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add rss/ requirements.lock
+          git commit --allow-empty -m "Update RSS"
           git push
