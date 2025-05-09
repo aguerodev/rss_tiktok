@@ -138,8 +138,7 @@ async def main() -> None:
                 num_sessions=1,
                 sleep_after=1,
                 headless=HEADLESS,
-                browser=BROWSER,
-                mobile=MOBILE,
+                browser_type=BROWSER,   # ← aquí
                 proxy=PROXY,
             )
 
