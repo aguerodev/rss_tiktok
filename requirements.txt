@@ -1,0 +1,2 @@
+TikTokApi>=7.0.0
+feedgen>=1.0.0
