@@ -6,13 +6,14 @@ on:
     branches: [main]
   workflow_dispatch:
   schedule:
+    # Cada 4 horas, minuto 10
     - cron: '10 */4 * * *'
 
 jobs:
   rss_generator:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Set up Python
@@ -20,32 +21,27 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Set up display for Playwright
-        run: |
-          export DISPLAY=:99
-          sudo Xvfb -ac :99 -screen 0 1280x1024x24 >/dev/null 2>&1 &
-
-      - name: Install uv
+      - name: Install uv CLI
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Install dependencies
+      - name: Create virtual env & sync dependencies
         run: |
-          uv venv                     # crea .venv
-          uv pip install -r requirements.txt
+          uv venv            # crea .venv
+          uv sync            # instala según uv.lock
           uv run python -m playwright install chromium
 
       - name: Generate RSS feeds
         env:
-          MS_TOKEN: ${{ secrets.MS_TOKEN }}
+          MS_TOKEN: ${{ secrets.MS_TOKEN }}  # define tu token en Settings > Secrets
         run: |
           uv run python tiktok_rss.py
 
-      - name: Commit and push
+      - name: Commit and push feeds
         run: |
           git config --global user.name  "github-actions"
-          git config --global user.email "github-actions@github.com"
-          git add rss/ requirements.lock
-          git commit --allow-empty -m "Update RSS"
+          git config --global user.email "actions@github.com"
+          git add rss/ uv.lock
+          git commit --allow-empty -m "chore: update RSS feeds"
           git push
