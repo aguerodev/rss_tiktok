@@ -1,44 +1,56 @@
 #!/usr/bin/env python3
 """
-TikTok RSS - Generador ultra-optimizado de feeds RSS para TikTok
-Sin capturas de thumbnails, sin imágenes, solo texto puro y enlaces.
-
-Diseñado para usar con uv.lock para gestión de dependencias.
+TikTok RSS – versión robusta
+────────────────────────────
+• Cambios clave
+  1. Soporta variables de entorno para `HEADLESS`, `BROWSER` y `MOBILE`.
+  2. Reintenta cada usuario hasta 3 veces (con espera exponencial) antes de rendirse.
+  3. Opcional: uso de proxy si defines `TIKTOK_PROXY`.
+  4. Sigue generando aunque algún usuario falle.
 """
 
 import os
 import asyncio
 import csv
+import logging
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-import logging
 
 from feedgen.feed import FeedGenerator
 from TikTokApi import TikTokApi
 
-# Constantes
+# ──────────────────── Configuración general ────────────────────
 RSS_DIR = Path("rss")
-MAX_VIDEOS = 10
-MAX_TEXT_LENGTH = 255
-BASE_URL = os.environ.get("RSS_BASE_URL", "https://raw.githubusercontent.com/usuario/tiktok-rss/main/v3/")
+RSS_DIR.mkdir(exist_ok=True)
 
-# Configuración de logging
+MAX_VIDEOS = int(os.getenv("MAX_VIDEOS", 10))
+MAX_TEXT_LENGTH = 255
+BASE_URL = os.getenv(
+    "RSS_BASE_URL",
+    "https://raw.githubusercontent.com/usuario/tiktok-rss/main/v3/",
+)
+
+# Opciones de navegador
+HEADLESS = os.getenv("HEADLESS", "false").lower() == "true"
+BROWSER = os.getenv("BROWSER", "webkit")        # chromium | firefox | webkit
+MOBILE = os.getenv("MOBILE", "true").lower() == "true"
+
+PROXY = os.getenv("TIKTOK_PROXY")  # ej. http://user:pass@host:port
+
+# Logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("tiktok-rss")
+log = logging.getLogger("tiktok-rss")
 
-# Garantizar que el directorio de salida exista
-RSS_DIR.mkdir(exist_ok=True)
 
-async def generate_feed(username: str, api_instance: TikTokApi) -> None:
-    """Genera un feed RSS para un usuario específico de TikTok."""
-    logger.info(f"Generando feed para: {username}")
-    
-    # Configurar el generador de feed
+# ──────────────────── Funciones auxiliares ────────────────────
+async def generate_feed(username: str, api: TikTokApi) -> None:
+    """Genera el feed RSS de un usuario TikTok. Retira `headless` para reducir bloqueos."""
     fg = FeedGenerator()
     fg.id(f"https://www.tiktok.com/@{username}")
     fg.title(f"{username} TikTok")
@@ -46,108 +58,100 @@ async def generate_feed(username: str, api_instance: TikTokApi) -> None:
     fg.subtitle(f"Últimos TikToks de {username}")
     fg.link(href=f"{BASE_URL}rss/{username}.xml", rel="self")
     fg.language("es")
-    
-    # Inicializar usuario de TikTok
-    try:
-        ttuser = api_instance.user(username)
-        user_data = await ttuser.info()
-        
-        # Timestamp más reciente para actualización del feed
-        latest_update = None
-        
-        # Procesar videos
-        async for video in ttuser.videos(count=MAX_VIDEOS):
-            entry = fg.add_entry()
-            
-            # Datos básicos
-            video_id = video.id
-            video_data = video.as_dict
-            video_url = f"https://tiktok.com/@{username}/video/{video_id}"
-            
-            # Timestamp
-            create_time = datetime.fromtimestamp(video_data['createTime'], timezone.utc)
-            latest_update = max(create_time, latest_update) if latest_update else create_time
-            
-            # Contenido
-            description = video_data.get('desc', '')
-            title = description[:MAX_TEXT_LENGTH] if description else f"Video de {username}"
-            
-            # Configurar entrada
-            entry.id(video_url)
-            entry.title(title)
-            entry.link(href=video_url)
-            entry.published(create_time)
-            entry.updated(create_time)
-            
-            # Contenido en texto plano con enlace directo al video
-            content = f"{description[:MAX_TEXT_LENGTH] if description else 'Sin descripción'}\n\n"
-            content += f"Ver en TikTok: {video_url}"
-            
-            # Añadir estadísticas si están disponibles
-            stats = video_data.get('stats', {})
-            if stats:
-                content += f"\n\n👍 {stats.get('diggCount', 0)} | "
-                content += f"💬 {stats.get('commentCount', 0)} | "
-                content += f"🔄 {stats.get('shareCount', 0)}"
-            
-            entry.content(content, type="text")
-        
-        # Actualizar timestamp del feed
-        if latest_update:
-            fg.updated(latest_update)
-        
-        # Guardar feed
-        output_file = RSS_DIR / f"{username}.xml"
-        fg.rss_file(output_file, pretty=True)
-        logger.info(f"Feed generado exitosamente: {output_file}")
-        
-    except Exception as e:
-        logger.error(f"Error generando feed para {username}: {e}")
 
+    latest_update: Optional[datetime] = None
+
+    ttuser = api.user(username)
+    async for video in ttuser.videos(count=MAX_VIDEOS):
+        data = video.as_dict
+        vid_url = f"https://tiktok.com/@{username}/video/{video.id}"
+
+        ts = datetime.fromtimestamp(data["createTime"], timezone.utc)
+        latest_update = max(latest_update, ts) if latest_update else ts
+
+        desc = (data.get("desc") or "").strip()
+        title = desc[:MAX_TEXT_LENGTH] or f"Video de {username}"
+
+        entry = fg.add_entry()
+        entry.id(vid_url)
+        entry.title(title)
+        entry.link(href=vid_url)
+        entry.published(ts)
+        entry.updated(ts)
+
+        stats = data.get("stats", {})
+        content = f"{desc[:MAX_TEXT_LENGTH] or 'Sin descripción'}\n\nVer en TikTok: {vid_url}"
+        if stats:
+            content += (
+                f"\n\n👍 {stats.get('diggCount', 0)} | "
+                f"💬 {stats.get('commentCount', 0)} | "
+                f"🔄 {stats.get('shareCount', 0)}"
+            )
+        entry.content(content, type="text")
+
+    if latest_update:
+        fg.updated(latest_update)
+
+    out = RSS_DIR / f"{username}.xml"
+    fg.rss_file(out, pretty=True)
+    log.info(f"✓ Feed guardado: {out}")
+
+
+async def process_user(username: str, api: TikTokApi, attempts: int = 3) -> None:
+    """Intenta generar el feed con reintentos exponenciales."""
+    for i in range(1, attempts + 1):
+        try:
+            await generate_feed(username, api)
+            return
+        except Exception as e:
+            wait = 2 ** i + random.uniform(0, 1)
+            log.warning(f"{username}: intento {i}/{attempts} falló → {e} (esperando {wait:.1f}s)")
+            await asyncio.sleep(wait)
+    log.error(f"✗ No se pudo generar el feed para {username} tras {attempts} intentos")
+
+
+# ──────────────────── Programa principal ────────────────────
 async def main() -> None:
-    """Función principal para generar feeds RSS."""
-    # Verificar token de autenticación
-    ms_token = os.environ.get("MS_TOKEN")
-    if not ms_token:
-        logger.error("Variable de entorno MS_TOKEN no definida")
+    token = os.getenv("MS_TOKEN")
+    if not token:
+        log.error("Variable de entorno MS_TOKEN no definida")
         return
-    
-    # Leer usuarios desde CSV
-    usernames = []
+
+    # Cargar lista de usuarios
     try:
         with open("subscriptions.csv") as f:
-            reader = csv.DictReader(f, fieldnames=["username"])
-            for row in reader:
-                username = row["username"].strip().rstrip(",")
-                if username:
-                    usernames.append(username)
+            usernames = [row["username"].strip() for row in csv.DictReader(f, fieldnames=["username"]) if row["username"].strip()]
     except Exception as e:
-        logger.error(f"Error leyendo subscriptions.csv: {e}")
+        log.error(f"Error leyendo subscriptions.csv: {e}")
         return
-    
+
     if not usernames:
-        logger.warning("No se encontraron usuarios en subscriptions.csv")
+        log.warning("No hay usuarios en subscriptions.csv")
         return
-    
-    logger.info(f"Procesando {len(usernames)} usuarios")
-    
-    # Inicializar API de TikTok
+
+    log.info(f"Procesando {len(usernames)} usuarios → {', '.join(usernames)}")
+
     try:
         async with TikTokApi() as api:
             await api.create_sessions(
-                ms_tokens=[ms_token],
+                ms_tokens=[token],
                 num_sessions=1,
                 sleep_after=1,
-                headless=True  # Modo headless para mayor rapidez
+                headless=HEADLESS,
+                browser=BROWSER,
+                mobile=MOBILE,
+                proxy=PROXY,
             )
-            
-            # Procesar usuarios en secuencia
-            for username in usernames:
-                await generate_feed(username, api)
+
+            for u in usernames:
+                await process_user(u, api)
+                # Pequeña pausa entre usuarios para reducir detección
+                await asyncio.sleep(3)
     except Exception as e:
-        logger.error(f"Error general de la API de TikTok: {e}")
-    
-    logger.info("Proceso de generación de feeds completado")
+        log.error(f"Fallo global de TikTokApi: {e}")
+
+    log.info("✓ Generación de feeds terminada")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
