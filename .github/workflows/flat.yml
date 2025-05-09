@@ -1,4 +1,3 @@
-# .github/workflows/flat.yml
 name: Generate TikTok RSS Feeds
 
 on:
@@ -6,42 +5,58 @@ on:
     branches: [main]
   workflow_dispatch:
   schedule:
-    # Cada 4 horas, minuto 10
+    # Ejecuta cada 4 h, minuto 10
     - cron: '10 */4 * * *'
 
 jobs:
   rss_generator:
     runs-on: ubuntu-latest
+
     steps:
+      # 1. Clona el repo con credenciales que permiten push
       - name: Checkout repository
         uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+          fetch-depth: 0      # necesario para poder hacer commit y push
 
+      # 2. Python 3.12
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
 
+      # 3. Instala la CLI «uv»
       - name: Install uv CLI
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # 4. Crea .venv, instala deps y Chromium
       - name: Create virtual env & sync dependencies
         run: |
-          uv venv            # crea .venv
-          uv sync            # instala según uv.lock
+          uv venv
+          uv sync                             # usa tu uv.lock
           uv run python -m playwright install chromium
 
+      # 5. Genera los feeds RSS
       - name: Generate RSS feeds
         env:
-          MS_TOKEN: ${{ secrets.MS_TOKEN }}  # define tu token en Settings > Secrets
+          MS_TOKEN: ${{ secrets.MS_TOKEN }}
+          HEADLESS: "false"                  # evita detección de bot
+          BROWSER:  "webkit"                 # usa WebKit en vez de Chromium
         run: |
           uv run python tiktok_rss.py
 
+      # 6. Commit y push de los XML generados
       - name: Commit and push feeds
         run: |
           git config --global user.name  "github-actions"
           git config --global user.email "actions@github.com"
+          # fuerza remote con token de escritura
+          git remote set-url origin \
+            https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           git add rss/ uv.lock
           git commit --allow-empty -m "chore: update RSS feeds"
-          git push
+          git push origin HEAD:main
